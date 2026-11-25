@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>PistolLauncher</AssemblyName>
+    <RootNamespace>PistolLauncher</RootNamespace>
+    <ApplicationIcon>Assets-icon.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets-icon.ico" />
+    <Content Include=".assets\textures\minecraft.png;.assets\textures\curseforge.png;.assets\textures\modrinth.png;.assets\textures\offline-profile.png;.assets\textures\guide.png;.assets\textures\icon.png;.assets\textures\icon.ico">
+      <Link>PistolLauncher\.assets\textures\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include=".assets\avatars\default.png">
+      <Link>PistolLauncher\.assets\avatars\default.png</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+</Project>
