@@ -211,7 +211,7 @@ public partial class MainWindow : Window
         _currentFileDir = _root;
         RefreshFileList();
         var guide = Path.Combine(_launcherRoot, ".assets", "textures", "guide.png");
-        if (File.Exists(guide)) AssistantImage.Source = new System.Windows.Media.Imaging.BitmapImage(new Uri(guide));
+        if (File.Exists(guide)) AssistantImage.Source = LoadBitmap(guide);
         UpdateActiveProfileUi();
         UpdateNavigation();
         ApplyPreferences();
@@ -260,7 +260,11 @@ public partial class MainWindow : Window
     private void HomeNav_Click(object sender, RoutedEventArgs e) => NavigateToPage(0);
     private void Cancel_Click(object sender, RoutedEventArgs e) => _downloadCts?.Cancel();
 
-    private void CatalogNav_Click(object sender, RoutedEventArgs e) => NavigateToPage(2);
+    private async void CatalogNav_Click(object sender, RoutedEventArgs e)
+    {
+        NavigateToPage(2);
+        if (!_catalogHasSearched) await SearchCatalogAsync();
+    }
     private void ClosetNav_Click(object sender, RoutedEventArgs e) => NavigateToPage(3);
     private void FilesNav_Click(object sender, RoutedEventArgs e) { NavigateToPage(4); RefreshFileList(); }
     private void AccountsNav_Click(object sender, RoutedEventArgs e) => NavigateToPage(5);
@@ -1089,7 +1093,7 @@ public partial class MainWindow : Window
         "Открыть папку" => "Open folder", "Открыть папку инстанса" => "Open instance folder", "Переименовать" => "Rename", "Удалить" => "Delete", "Закрыть" => "Close",
         "Инстанс" => "Instance", "Инстанс с таким именем уже существует." => "An instance with this name already exists.", "В имени есть недопустимые символы." => "The name contains invalid characters.",
         "Папка не распознана как инстанс PistolLauncher." => "This folder is not recognized as a PistolLauncher instance.", "Не удалось закрыть игру" => "Could not close the game",
-        "Удаление инстанса" => "Delete instance", "Удаление файла" => "Delete file", "Подтверждение удаления" => "Confirm deletion",
+        "Удаление инстанса" => "Delete instance", "Удалить профиль" => "Delete profile", "Удаление профиля" => "Profile deletion", "Удаление файла" => "Delete file", "Подтверждение удаления" => "Confirm deletion",
         "Не удалось загрузить скин" => "Could not load skin", "Не удалось удалить" => "Could not delete", "Не удалось переименовать инстанс" => "Could not rename instance",
         "Сначала выбери инстанс." => "Select an instance first.", "Выбери версию и введи название инстанса." => "Choose a version and enter an instance name.",
         "Введи название инстанса." => "Enter an instance name.", "Не удалось загрузить каталог Minecraft." => "Could not load the Minecraft version list.",
@@ -1231,7 +1235,13 @@ public partial class MainWindow : Window
         var canClose = false;
         dialog.Closing += (_, e) => { if (!canClose) e.Cancel = true; };
         ApplyLauncherChrome(dialog, title);
-        host.IsEnabled = false;
+        var useMainWindowBlocker = ReferenceEquals(host, this);
+        if (useMainWindowBlocker)
+        {
+            InteractionBlocker.Visibility = Visibility.Visible;
+            InteractionBlocker.Focus();
+        }
+        else host.IsEnabled = false;
         try
         {
             dialog.Show();
@@ -1255,7 +1265,8 @@ public partial class MainWindow : Window
         {
             canClose = true;
             dialog.Close();
-            host.IsEnabled = true;
+            if (useMainWindowBlocker) InteractionBlocker.Visibility = Visibility.Collapsed;
+            else host.IsEnabled = true;
             host.Activate();
         }
     }
@@ -1391,19 +1402,9 @@ public partial class MainWindow : Window
         _catalogPageVersion = SelectedGameVersion;
         _catalogPageLoader = SelectedCatalogLoader;
         var selectedType = (ProjectKind.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "mod";
-        if (SelectedCatalogInstance is null && !IsCatalogSharedTarget)
-        {
-            CatalogStatus.Text = L("Сначала создай инстанс во вкладке «Версии», затем выбери его здесь.", "Create an instance in the Instances tab, then select it here.");
-            return;
-        }
         if (IsCatalogSharedTarget && selectedType == "mod")
         {
             CatalogStatus.Text = L("«Общая папка» доступна для ресурспаков и шейдеров. Для модов выбери инстанс.", "Shared folder is for resource packs and shaders. Select an instance for mods.");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(SelectedGameVersion))
-        {
-            CatalogStatus.Text = L("У выбранного инстанса не указана версия Minecraft. Выбери другой инстанс.", "The selected instance has no Minecraft version. Choose another instance.");
             return;
         }
         var source = (CatalogSource.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "all";
@@ -1548,8 +1549,8 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(gameVersion)) facetGroups.Add(new[] { "versions:" + gameVersion });
         if (type == "mod" && !string.IsNullOrWhiteSpace(loader) && loader != "vanilla") facetGroups.Add(new[] { "categories:" + loader });
         var facets = Uri.EscapeDataString(JsonSerializer.Serialize(facetGroups));
-        var effectiveQuery = string.IsNullOrWhiteSpace(query) ? "minecraft" : query;
-        var uri = "https://api.modrinth.com/v2/search?limit=50&offset=" + Math.Max(0, offset) + "&index=" + (string.IsNullOrWhiteSpace(query) ? "downloads" : "relevance") + "&facets=" + facets + "&query=" + Uri.EscapeDataString(effectiveQuery);
+        var uri = "https://api.modrinth.com/v2/search?limit=50&offset=" + Math.Max(0, offset) + "&index=" + (string.IsNullOrWhiteSpace(query) ? "downloads" : "relevance") + "&facets=" + facets;
+        if (!string.IsNullOrWhiteSpace(query)) uri += "&query=" + Uri.EscapeDataString(query.Trim());
         using var response = await Http.GetAsync(uri);
         response.EnsureSuccessStatusCode();
         using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
@@ -1610,6 +1611,9 @@ public partial class MainWindow : Window
         }
         try
         {
+            if (project.Type is "mod" or "resourcepack" or "shader" && SelectedCatalogInstance is null && !IsCatalogSharedTarget)
+                throw new InvalidOperationException(L("Для скачивания выбери инстанс или «Общая папка».", "Choose an instance or Shared folder before downloading."));
+            if (project.Type == "mod" && IsCatalogSharedTarget) throw new InvalidOperationException(L("Для модов выбери конкретный инстанс.", "Select a specific instance for mods."));
             CatalogStatus.Text = $"Получаю совместимую версию {project.Title}…";
             var loader = SelectedCatalogLoader;
             string downloadUrl, fileName;
@@ -1660,8 +1664,6 @@ public partial class MainWindow : Window
                         if (algorithm is 1 or 2) { expectedHash = hash.GetProperty("value").GetString(); expectedMd5 = algorithm == 2; break; }
                     }
             }
-            if (project.Type is "mod" or "resourcepack" or "shader" && SelectedCatalogInstance is null && !IsCatalogSharedTarget) throw new InvalidOperationException("Сначала выбери инстанс или общую папку.");
-            if (project.Type == "mod" && IsCatalogSharedTarget) throw new InvalidOperationException("Для модов выбери конкретный инстанс.");
             var destinationDir = project.Type switch
             {
                 "modpack" => Path.Combine(_root, "downloads"),
@@ -1982,7 +1984,7 @@ public partial class MainWindow : Window
         var input = new PasswordBox { Password = _curseForgeKey ?? "", Background = new SolidColorBrush(Color.FromRgb(17, 20, 18)), Foreground = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(57, 65, 59)), Padding = new Thickness(10, 8, 10, 8), MinHeight = 38 };
         panel.Children.Add(input);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 10, 0, 0) };
-        var getKey = new Button { Content = "Получить ключ", Margin = new Thickness(0, 0, 8, 0) };
+        var getKey = new Button { Content = L("Получить ключ CurseForge", "Fetch CurseForge key"), Margin = new Thickness(0, 0, 8, 0) };
         getKey.Click += (_, _) => OpenCurseForgeKeyPage_Click(this, new RoutedEventArgs());
         var save = new Button { Content = "Сохранить" };
         save.Click += (_, _) =>
@@ -1999,7 +2001,7 @@ public partial class MainWindow : Window
         buttons.Children.Add(getKey); buttons.Children.Add(save); panel.Children.Add(buttons); dialog.Content = panel; ApplyLauncherChrome(dialog, "CurseForge API key"); dialog.ShowDialog();
     }
 
-    private void OpenCurseForgeKeyPage_Click(object sender, RoutedEventArgs e) => Process.Start(new ProcessStartInfo("https://support.curseforge.com/support/solutions/articles/9000208346-about-the-curseforge-api-and-how-to-apply-for-a-key?locale=en") { UseShellExecute = true });
+    private void OpenCurseForgeKeyPage_Click(object sender, RoutedEventArgs e) => Process.Start(new ProcessStartInfo("https://console.curseforge.com/") { UseShellExecute = true });
 
     private void OfflineLogin_Click(object sender, RoutedEventArgs e)
     {
@@ -2578,8 +2580,8 @@ public partial class MainWindow : Window
             Directory.Delete(target, recursive: true);
             if (string.Equals(_selectedInstancePath, target, StringComparison.OrdinalIgnoreCase)) _selectedInstancePath = null;
             RefreshInstances();
-            StatusText.Text = $"Инстанс «{instance.Name}» удалён";
-            DetailText.Text = "Файлы инстанса удалены; общие библиотеки и assets оставлены для остальных версий.";
+            StatusText.Text = L($"Инстанс «{instance.Name}» удалён", $"Instance ‘{instance.Name}’ deleted");
+            DetailText.Text = L("Файлы инстанса удалены; общие библиотеки и assets оставлены для остальных версий.", "Instance files were deleted; shared libraries and assets were kept for other versions.");
         }
         catch (Exception ex)
         {
@@ -3543,15 +3545,33 @@ public partial class MainWindow : Window
                 await InstallVersionAsync(selectedVersion, instanceDir, progress, _downloadCts.Token, selectedLoader != "Vanilla");
                 var loaderVersion = selectedLoader == "Vanilla" ? "" : await InstallLoaderProfileAsync(selectedVersion.Id, selectedLoader, instanceDir, progress, _downloadCts.Token);
                 await File.WriteAllTextAsync(Path.Combine(instanceDir, ".pistol-instance.json"), JsonSerializer.Serialize(new { name = selectedName, gameVersion = selectedVersion.Id, loader = selectedLoader, loaderVersion }));
-                StatusText.Text = $"Инстанс «{selectedName}» создан";
-                DetailText.Text = $"Файлы Minecraft {selectedVersion.Id} находятся в minecraft/instances/{selectedName}";
+                StatusText.Text = L($"Инстанс «{selectedName}» создан", $"Instance ‘{selectedName}’ created");
+                DetailText.Text = L($"Файлы Minecraft {selectedVersion.Id} находятся в minecraft/instances/{selectedName}", $"Minecraft {selectedVersion.Id} files are in minecraft/instances/{selectedName}");
                 RefreshInstances();
                 InstanceList.SelectedItem = _instances.FirstOrDefault(i => i.Path.Equals(instanceDir, StringComparison.OrdinalIgnoreCase));
             });
         }
         catch (OperationCanceledException) { StatusText.Text = "Создание инстанса отменено"; DetailText.Text = "Незавершённую папку можно удалить вручную."; }
-        catch (Exception ex) { StatusText.Text = "Не удалось создать инстанс"; DetailText.Text = ex.Message; RefreshInstances(); }
+        catch (Exception ex)
+        {
+            StatusText.Text = "Не удалось создать инстанс";
+            DetailText.Text = ex.Message;
+            WriteDiagnostic("instance-create.log", ex);
+            RefreshInstances();
+            ShowMessageBox(this, L("Не удалось создать инстанс:\n", "Could not create instance:\n") + ex.Message + L("\n\nПодробности сохранены в %LOCALAPPDATA%\\PistolLauncher\\logs\\instance-create.log", "\n\nDetails saved to %LOCALAPPDATA%\\PistolLauncher\\logs\\instance-create.log"), L("Ошибка создания инстанса", "Instance creation error"));
+        }
         finally { _downloadCts?.Dispose(); _downloadCts = null; }
+    }
+
+    private static void WriteDiagnostic(string fileName, Exception exception)
+    {
+        try
+        {
+            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PistolLauncher", "logs");
+            Directory.CreateDirectory(directory);
+            File.AppendAllText(Path.Combine(directory, fileName), $"[{DateTimeOffset.Now:O}] {exception}\r\n\r\n");
+        }
+        catch { }
     }
 
     private UIElement BuildPackSearchPage(string source, out TextBox query, out TextBlock status, out ListBox results, out Button search, out Button install, out Button configureKey)
